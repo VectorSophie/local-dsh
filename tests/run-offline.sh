@@ -85,6 +85,22 @@ LOCAL_DSH_HOME=$H "$R/uninstall.sh" --purge > "$T/u3.log" 2>&1
 LOCAL_DSH_HOME=$HOME "$R/uninstall.sh" --purge > "$T/u4.log" 2>&1 && bad "uninstall accepted LOCAL_DSH_HOME=\$HOME" || ok "uninstall refuses a non-dedicated LOCAL_DSH_HOME"
 out=$(LOCAL_DSH_HOME=/ "$R/uninstall.sh" --purge 2>&1); grep -q "dedicated directory" <<<"$out" && ok "LOCAL_DSH_HOME=/ is refused" || bad "LOCAL_DSH_HOME=/ not refused"
 
+# 5b. fetch-model offline: existing files and symlinked files are verified (never downloaded or replaced),
+#     shard links are created, a changed file is caught. No network: every file is already present.
+C="$T/fetch repo"; mkdir -p "$C/repo/models" "$C/models/sub" "$C/shared"
+cp -r "$R/lib" "$R/versions.env" "$C/repo/"
+head -c 300000 /dev/urandom > "$C/models/sub/a.gguf"; head -c 200000 /dev/urandom > "$C/shared/b.gguf"
+ln -s "$C/shared/b.gguf" "$C/models/b.gguf"
+sa=$(sha256sum < "$C/models/sub/a.gguf" | cut -d' ' -f1); sb=$(sha256sum < "$C/shared/b.gguf" | cut -d' ' -f1)
+printf 'model\toff\tverified\torg/repo\t%040d\tsub/a.gguf\t1\t1\t1\toffline test\nfile\toff\tsub/a.gguf\t300000\t%s\nfile\toff\tb.gguf\t200000\t%s\nlink\toff\tsub/c.gguf\t../b.gguf\n' 0 "$sa" "$sb" > "$C/repo/models/catalog.tsv"
+out=$(LOCAL_DSH_HOME=$C/home HF_ENDPOINT=http://127.0.0.1:9 "$C/repo/lib/fetch-model.sh" off "$C/models" 2>&1); rc=$?
+if [ $rc = 0 ] && [ -L "$C/models/b.gguf" ] && [ "$(readlink "$C/models/b.gguf")" = "$C/shared/b.gguf" ] && [ -L "$C/models/sub/c.gguf" ] \
+  && ! grep -q downloading <<<"$out"; then ok "fetch-model: verifies existing and symlinked files offline, keeps the symlink, creates shard links"
+else bad "fetch-model offline (rc $rc)"; echo "$out"; fi
+printf 'local-dsh-test!!' | dd of="$C/models/sub/a.gguf" bs=1 seek=1000 conv=notrunc status=none; touch -d '+1 min' "$C/models/sub/a.gguf"
+out=$(LOCAL_DSH_HOME=$C/home HF_ENDPOINT=http://127.0.0.1:9 "$C/repo/lib/fetch-model.sh" off "$C/models" 2>&1); rc=$?
+[ $rc != 0 ] && grep -q "SHA-256 mismatch" <<<"$out" && ok "fetch-model: a changed file fails verification" || { bad "fetch-model changed file (rc $rc)"; echo "$out"; }
+
 # 6. launcher lifecycle (mock server + mock dsh; gpuq backend only if task-spooler is present)
 python3 -I "$R/tests/test_launcher.py" || FAIL=1
 

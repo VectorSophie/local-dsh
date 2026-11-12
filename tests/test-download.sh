@@ -5,6 +5,8 @@
 # resume from .part, SHA-256 verification and stamp, re-run without download, corrupt partial (mismatch, .part
 # kept), and a permanent HTTP error (fails fast instead of retrying). HF_ENDPOINT selects a mirror.
 set -uo pipefail
+# never in CI by accident: it needs the network (set LOCAL_DSH_NETWORK_TESTS=1 to run it there on purpose)
+if [ "${CI:-}" = true ] && [ -z "${LOCAL_DSH_NETWORK_TESTS:-}" ]; then echo "SKIP network download test in CI"; exit 0; fi
 R=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 T=$(mktemp -d /tmp/local-dsh-dl.XXXXXX); trap 'pkill -TERM -P $$ 2>/dev/null; rm -rf "$T"' EXIT
 FAIL=0; ok() { echo "PASS $*"; }; bad() { echo "FAIL $*"; FAIL=1; }

@@ -112,7 +112,9 @@ stop_owned() {  # stop the server recorded in $OWNER, whatever its state; never 
     pid=; [ "$st" = running ] && pid=$(gpuq -p "$id" 2>/dev/null)
     is_server_pid "$pid" || { [ "$st" = running ] && pid=$(cat "$RUN/server.pid" 2>/dev/null); }
   fi
+  local ours=no
   if is_server_pid "$pid"; then
+    ours=yes
     kill -TERM "$pid"; for _ in $(seq 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
     kill -0 "$pid" 2>/dev/null && kill -KILL "$pid"
   elif [ "$kind" = direct ] && is_ours_pid "$pid"; then
@@ -120,7 +122,8 @@ stop_owned() {  # stop the server recorded in $OWNER, whatever its state; never 
   fi
   if [ "$kind" = gpuq ]; then
     [ -n "$st" ] && timeout 60 gpuq -w "$id" >/dev/null 2>&1
-    [ "$(job_state "$id")" = running ] && gpuq -k "$id" >/dev/null 2>&1
+    # -k only for a job whose server we identified: after a ts restart the id may be another install's job
+    [ "$ours" = yes ] && [ "$(job_state "$id")" = running ] && gpuq -k "$id" >/dev/null 2>&1
     case $(job_state "$id") in
       queued|allocating) say "gpuq job $id is still waiting; it will exit immediately when dispatched (cancel marker)" ;;
       *) rm -f "$marker"; say "server stopped; gpuq job $id: $(job_state "$id" | grep . || echo "no longer queued")" ;;
@@ -145,7 +148,10 @@ live_clients() {  # registered launchers that are still alive (stale files are r
 
 on_exit() {
   rm -f "$RUN/clients/$$"
-  exec 9>"$RUN/start.lock"; flock 9   # serialize with launchers that are attaching right now
+  # serialize with launchers attaching right now; a launcher that holds the lock longer is starting a server
+  # (possibly waiting for GPUs) and owns its outcome, so don't hang the exit on it
+  exec 9>"$RUN/start.lock"
+  flock -w 10 9 || { say "another local-dsh launcher is starting the server; leaving it to that launcher"; return; }
   if [ -f "$OWNER" ] && [ "$(live_clients)" = 0 ]; then stop_owned
   elif [ -f "$OWNER" ]; then say "leaving the server running for $(live_clients) other local-dsh client(s)"; fi
 }

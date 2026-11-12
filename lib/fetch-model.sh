@@ -28,6 +28,7 @@ fetch() {  # path size sha
     rc=$?; [ $rc = 0 ] && continue
     # a permanent HTTP error (wrong revision/path, gated or missing repo) is not worth 200 retries
     case $code in 408|429) ;; 4??) die "$1: HTTP $code from $BASE/$1 (not retrying; check the catalog revision, HF_ENDPOINT or proxy)" ;; esac
+    [ $rc = 23 ] && die "$1: cannot write $f.part (disk full or not writable; $(df -h --output=avail "$(dirname "$f")" | tail -1) free). Free space and re-run; the partial file is kept."
     say "curl exit $rc at $(stat -c %s "$f.part" 2>/dev/null || echo 0) bytes; retry $try in 20 s (safe to interrupt and re-run)"
     sleep 20
   done
@@ -39,8 +40,8 @@ fetch() {  # path size sha
 
 while IFS=$'\t' read -r path size sha; do
   f=$DIR/$path
-  if [ -f "$f" ] && [ ! -L "$f" ]; then
-    have=$(stat -c %s "$f")
+  if [ -f "$f" ]; then   # a regular file, or a symlink to one (e.g. a shared Engram copy): verify, never replace
+    have=$(stat -Lc %s "$f")
     [ "$have" = "$size" ] || die "$path exists with $have bytes, expected $size; move it away and re-run"
     if [ "$VERIFY" = size ] || stamped "$f" "$size" "$sha"; then say "ok $path"; continue; fi
     say "verifying SHA-256 of existing $path ($((size / 1000000000)) GB)"

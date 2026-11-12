@@ -84,6 +84,8 @@ mkdir -p "$LOCAL_DSH_HOME" "$STATE" "$RUN" "$LOGS"
 if [ -f "$CONFIG" ] && [ "$RECONF" = 0 ]; then source_config; say "reusing saved answers (--reconfigure to change)"; fi
 ALL_GPUS=$(echo "$GPU_LINES" | cut -d, -f1 | paste -sd,)
 CUDA_DEVICES=${O_GPUS:-${CUDA_DEVICES:-$(ask "GPUs to use (comma-separated indices)" "$ALL_GPUS")}}
+[[ $CUDA_DEVICES =~ ^[0-9]+(,[0-9]+)*$ ]] || die "--gpus must be comma-separated GPU indices, got: $CUDA_DEVICES"
+for g in ${CUDA_DEVICES//,/ }; do echo "$GPU_LINES" | cut -d, -f1 | grep -qx "$g" || die "GPU $g does not exist (have: $ALL_GPUS)"; done
 GPU_COUNT=$(echo "$CUDA_DEVICES" | tr ',' '\n' | grep -c .)
 SEL_VRAM=$(echo "$GPU_LINES" | awk -F', ' -v sel=",$CUDA_DEVICES," 'index(sel, ","$1",") {s+=$3} END {printf "%d", s/1024}')
 echo "  selected GPUs $CUDA_DEVICES: $SEL_VRAM GB VRAM" >&2
@@ -107,33 +109,24 @@ elif [ -z "${SCHEDULER:-}" ]; then
 fi
 case $SCHEDULER in direct|gpuq) ;; *) die "scheduler must be direct or gpuq" ;; esac
 PORT=${O_PORT:-${PORT:-8041}}; CTX=${O_CTX:-${CTX:-65536}}
+[[ $PORT =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1024 ] && [ "$PORT" -le 65535 ] || die "--port must be 1024-65535, got: $PORT"
+[[ $CTX =~ ^[0-9]+$ ]] && [ "$CTX" -ge 4096 ] || die "--ctx must be a number >= 4096, got: $CTX"
 MODEL_ALIAS=local-dsh-$MODEL_ID
 TENSOR_SPLIT=$(printf "1%.0s," $(seq "$GPU_COUNT")); TENSOR_SPLIT=${TENSOR_SPLIT%,}
 CUDA_ARCHS=$(echo "$GPU_LINES" | awk -F', ' -v sel=",$CUDA_DEVICES," 'index(sel, ","$1",") {gsub(/\./, "", $4); print $4}' | sort -u | paste -sd';')
 NODE_PREFIX=$LOCAL_DSH_HOME/node-dsh-$DSH_VERSION
 LLAMA_BUILD=$LOCAL_DSH_HOME/llama.cpp-build-${LLAMA_CPP_COMMIT:0:12}
-backup_write "$CONFIG" <<EOF
-# local-dsh machine configuration, written by install.sh. Edit and re-run install.sh to apply.
-MODEL_ID=$MODEL_ID
-MODEL_DIR=$MODEL_DIR
-MODEL_PATH=$MODEL_DIR/$M_FIRST
-MODEL_ALIAS=$MODEL_ALIAS
-MIN_VRAM_GB=$MIN_VRAM_GB
-SCHEDULER=$SCHEDULER
-CUDA_DEVICES=$CUDA_DEVICES
-GPU_COUNT=$GPU_COUNT
-TENSOR_SPLIT=$TENSOR_SPLIT
-PORT=$PORT
-CTX=$CTX
-SERVER_EFFORT=50
-EXTRA_SERVER_ARGS=${EXTRA_SERVER_ARGS:-}
-QUEUE_WAIT=${QUEUE_WAIT:-1800}
-LOAD_WAIT=${LOAD_WAIT:-900}
-LLAMA_SERVER=$LLAMA_BUILD/bin/llama-server
-NODE_DIR=$(dirname "$(command -v node)")
-DSH_BIN=$NODE_PREFIX/node_modules/.bin/dsh
-DSH_HOME=$LOCAL_DSH_HOME/dsh-home
-EOF
+# config.env is sourced by bash, so every value is written shell-quoted (paths may contain spaces)
+{
+  echo "# local-dsh machine configuration, written by install.sh. Edit and re-run install.sh to apply."
+  for kv in "MODEL_ID=$MODEL_ID" "MODEL_DIR=$MODEL_DIR" "MODEL_PATH=$MODEL_DIR/$M_FIRST" "MODEL_ALIAS=$MODEL_ALIAS" \
+    "MIN_VRAM_GB=$MIN_VRAM_GB" "SCHEDULER=$SCHEDULER" "CUDA_DEVICES=$CUDA_DEVICES" "GPU_COUNT=$GPU_COUNT" \
+    "TENSOR_SPLIT=$TENSOR_SPLIT" "PORT=$PORT" "CTX=$CTX" "SERVER_EFFORT=50" "EXTRA_SERVER_ARGS=${EXTRA_SERVER_ARGS:-}" \
+    "QUEUE_WAIT=${QUEUE_WAIT:-1800}" "LOAD_WAIT=${LOAD_WAIT:-900}" "LLAMA_SERVER=$LLAMA_BUILD/bin/llama-server" \
+    "NODE_DIR=$(dirname "$(command -v node)")" "DSH_BIN=$NODE_PREFIX/node_modules/.bin/dsh" "DSH_HOME=$LOCAL_DSH_HOME/dsh-home"; do
+    v=${kv#*=}; printf '%s=%s\n' "${kv%%=*}" "${v@Q}"
+  done
+} | backup_write "$CONFIG"
 source_config
 
 # ---------------------------------------------------------------- 3. llama.cpp (pinned, isolated build)
@@ -192,7 +185,7 @@ if [ "$WITH_TUI" = 1 ]; then
 EOF
   printf 'packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n' | backup_write "$T/pnpm-workspace.yaml"
   { render dsh-tui.patch.yml; python3 -I "$LOCAL_DSH_REPO/lib/preset_without_tool_web.py" "$PRESET" insert; } | backup_write "$T/cordis.patch.yml"
-  if [ "$(node -p "require('$T/node_modules/$DSH_TUI_PACKAGE/package.json').version" 2>/dev/null)" = "$DSH_TUI_VERSION" ]; then say "already installed"
+  if [ "$(node -p 'require(process.argv[1]).version' "$T/node_modules/$DSH_TUI_PACKAGE/package.json" 2>/dev/null)" = "$DSH_TUI_VERSION" ]; then say "already installed"
   else
     cp "$LOCAL_DSH_REPO/lock/dsh-tui/pnpm-lock.yaml" "$T/pnpm-lock.yaml"   # exact tree + integrity hashes
     (cd "$T" && "$NODE_PREFIX/node_modules/.bin/pnpm" install --frozen-lockfile --ignore-scripts --reporter=append-only) \

@@ -4,11 +4,11 @@ The direct backend is always tested. The gpuq backend is tested only when task-s
 PATH, through a private socket and a scratch savelist: the shared queue is never used.
 usage: python3 -I tests/test_launcher.py
 """
-import json, os, shutil, signal, subprocess, sys, tempfile, time
+import json, os, shlex, shutil, signal, subprocess, sys, tempfile, time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MOCK = os.path.join(REPO, "tests", "mock")
-TMP = tempfile.mkdtemp(prefix="local-dsh-test-")
+TMP = tempfile.mkdtemp(prefix="local-dsh test-")  # a space in every path: quoting is under test too
 HOME_DIR = os.path.join(TMP, "home")
 PORT = str(18000 + os.getpid() % 1000)
 DSH_LOG = os.path.join(TMP, "dsh.ndjson")
@@ -30,7 +30,7 @@ def write_config(scheduler="direct", tui=True):
                LLAMA_SERVER=os.path.join(MOCK, "llama-server"), NODE_DIR=os.path.join(TMP, "nodebin"),  # empty: must not shadow PATH
                DSH_BIN=os.path.join(MOCK, "dsh"), DSH_HOME=os.path.join(HOME_DIR, "dsh-home"))
     with open(os.path.join(HOME_DIR, "config.env"), "w") as f:
-        f.writelines(f"{k}={v}\n" for k, v in cfg.items())
+        f.writelines(f"{k}={shlex.quote(v)}\n" for k, v in cfg.items())  # as install.sh writes it
     tui_dir = os.path.join(cfg["DSH_HOME"], "profiles", "dsh-tui", "node_modules", "@deepseek-harness-tui", "dsh-tui")
     if tui:
         os.makedirs(tui_dir, exist_ok=True)
