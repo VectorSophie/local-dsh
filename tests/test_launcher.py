@@ -174,6 +174,19 @@ def direct_tests():
     check("two launchers at once: exactly one server started, both rc 0", starts == 1 and rc_a == 0 and rc_b == 0, out_a[-200:] + out_b[-200:])
     clean("concurrent")
 
+    # direct owner record = pid + process start time (fixed at fork, kept across exec): it must still name the
+    # running llama-server after exec. Regression: a cmdline check raced the exec and leaked the server on CI.
+    n0 = len(records())
+    a = run("dsh-tui", extra={"MOCK_SLEEP": "6"})
+    wait_for(lambda: len(records()) > n0, 30)
+    owner = open(os.path.join(HOME_DIR, "run", "server.owner")).read().split()
+    stat = open(f"/proc/{owner[1]}/stat").read().rsplit(") ", 1)[1].split()
+    cmd = open(f"/proc/{owner[1]}/cmdline").read()
+    check("direct owner record: pid + start time naming the exec'd server",
+          owner[0] == "direct" and len(owner) == 3 and stat[19] == owner[2] and "llama-server" in cmd, (owner, stat[19], cmd[:80]))
+    finish(a)
+    clean("owner record")
+
     # dsh-stop while a client runs
     n0 = len(records())
     a = run("dsh-tui", extra={"MOCK_SLEEP": "8"})
