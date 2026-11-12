@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# local-dsh command dispatcher, installed as symlinks named after the commands:
+#   dsh-tui / dst   start the model server if needed, then the terminal UI in the current directory
+#   dsh-web         same, then the browser UI (prints a tokenized http://127.0.0.1 URL)
+#   dsh-run "task"  same, then one headless dsh task in the current directory
+#   dsh-tui-raw     the terminal UI only (no server management; troubleshooting)
+#   dsh-status      server health, owner, clients, GPU and RAM usage (read-only)
+#   dsh-stop        stop the server local-dsh started (never a server it did not start)
+# Server lifetime: a server local-dsh started is stopped when the last local-dsh client exits (normal exit,
+# Ctrl-C, terminal hangup, failed start). A server that was already running when we attached is never stopped.
+set -u
+. "$(dirname "$(readlink -f "$0")")/../lib/common.sh"
+cmd=$(basename "$0")
+if [ "$cmd" = local-dsh ]; then cmd=${1:-help}; shift || true; fi
+[ "$cmd" = dst ] && cmd=dsh-tui
+OWNER=$RUN/server.owner   # "direct <pid> <start-time>" or "gpuq <job> <cancel-marker>": only for servers we started
+
+healthy() {  # our model, our context, on our port
+  local models props
+  models=$(curl -sf --max-time 3 "http://127.0.0.1:$PORT/v1/models") || return 1
+  props=$(curl -sf --max-time 3 "http://127.0.0.1:$PORT/props") || return 1
+  python3 -I -c 'import json,sys; m=json.loads(sys.argv[1]); p=json.loads(sys.argv[2])
+ok = any(x.get("id")==sys.argv[3] for x in m.get("data",[])) and p.get("default_generation_settings",{}).get("n_ctx")==int(sys.argv[4])
+sys.exit(0 if ok else 1)' "$models" "$props" "$MODEL_ALIAS" "$CTX"
+}
+port_busy() { curl -s --max-time 2 -o /dev/null "http://127.0.0.1:$PORT/health"; }
+is_server_pid() { [ -n "${1:-}" ] && grep -qaF -- "$LLAMA_SERVER" "/proc/$1/cmdline" 2>/dev/null; }
+# Process start time (clock ticks since boot). It is fixed at fork and survives exec, so "pid + start time" names
+# exactly the process we started, from the first instant (before it execs) and even after its pid is reused.
+start_time() { sed -E 's/^.*\) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20; }
+same_process() { [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ "$(start_time "$1")" = "$2" ]; }
+
+# gpuq jobs carry a label unique to this installation (13 chars: shown untruncated by `gpuq`). A job id alone is not
+# an identity: ts numbers jobs from 0 again after its server restarts. So the launcher never removes (-r) or kills
+# (-k) a job by id. It stops a running job only by killing the llama-server process it identified, and a job it
+# gave up on exits by itself through its cancel marker when dispatched (it holds the GPUs only for that moment).
+# Never use `gpuq -i`/`ts -i`: on a job in "allocating" it crashes the ts server (observed twice).
+GPUQ_LABEL=ldsh-$(printf '%s' "$LOCAL_DSH_HOME" | sha256sum | cut -c1-8)
+job_state() { gpuq 2>/dev/null | awk -v id="$1" -v lab="[$GPUQ_LABEL]" '$1==id && index($0, lab) {print $2; exit}'; }
+
+owner_alive() {
+  local kind id extra
+  read -r kind id extra < "$OWNER" 2>/dev/null || return 1
+  case $kind in
+    direct) same_process "$id" "$extra" ;;
+    gpuq) st=$(job_state "$id"); [ -n "$st" ] && [ "$st" != finished ] ;;
+    *) return 1 ;;
+  esac
+}
+
+vram_check() {  # direct backend: refuse early instead of an OOM deep into loading
+  [ -n "${LOCAL_DSH_SKIP_VRAM_CHECK:-}" ] && return 0
+  command -v nvidia-smi >/dev/null || return 0
+  local free need=$((MIN_VRAM_GB * 1000))
+  free=$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits 2>/dev/null |
+    awk -F', ' -v sel=",${CUDA_DEVICES:-}," 'sel==",," || index(sel, ","$1",") {s+=$2} END {print s+0}')
+  [ "$free" -ge "$need" ] && return 0
+  nvidia-smi --query-compute-apps=pid,used_memory,process_name --format=csv,noheader >&2
+  die "only ${free} MiB free on GPU(s) ${CUDA_DEVICES:-all}; the model needs about ${need} MiB (processes above)"
+}
+
+start_server() {
+  mkdir -p "$RUN" "$LOGS"
+  if [ "$SCHEDULER" = gpuq ]; then
+    command -v gpuq >/dev/null || die "SCHEDULER=gpuq but no gpuq command on PATH"
+    # ts may refuse to remove a job in "allocating" and killing its runner crashes the ts server, so the job checks a
+    # cancel marker first: if we gave up before it was dispatched, it exits at once and frees the GPUs.
+    local marker=$RUN/cancel-$$-$RANDOM job
+    job=$(gpuq -L "$GPUQ_LABEL" -G "$GPU_COUNT" bash -c \
+      'if [ -e "$1" ]; then rm -f "$1"; echo "cancelled before dispatch"; exit 0; fi; exec "$2"' \
+      local-dsh-guard "$marker" "$LOCAL_DSH_REPO/lib/run-server.sh" 9>&-) || die "gpuq submit failed"
+    echo "gpuq $job $marker" > "$OWNER"
+    say "requested $GPU_COUNT GPU(s) from gpuq: job $job, label $GPUQ_LABEL (Ctrl-C cancels it)"
+  else
+    vram_check
+    # 9>&-: the server must not inherit the start lock, or the lock would live as long as the server
+    setsid "$LOCAL_DSH_REPO/lib/run-server.sh" < /dev/null > /dev/null 2>&1 9>&- &
+    echo "direct $! $(start_time $!)" > "$OWNER"   # our unreaped child: its /proc entry exists until we exit
+    say "starting llama-server (pid $!) on GPU(s) ${CUDA_DEVICES:-all}"
+  fi
+}
+
+wait_ready() {
+  local t kind id st
+  read -r kind id _ < "$OWNER"
+  if [ "$kind" = gpuq ]; then
+    for ((t = 0; ; t += 5)); do
+      st=$(job_state "$id"); [ "$st" = running ] && break
+      [ -z "$st" ] && die "gpuq job $id is no longer in the queue (was the queue server restarted?)"
+      [ "$st" = finished ] && die "gpuq job $id ended before the server started: $(gpuq -c "$id" 2>/dev/null | tail -3 | tr '\n' ' ')"
+      ((t >= QUEUE_WAIT)) && die "GPUs still busy after ${QUEUE_WAIT}s (job $id: $st)"
+      ((t % 30 == 0)) && say "waiting for $GPU_COUNT free GPU(s) ($st, ${t}s)"
+      sleep 5
+    done
+    say "GPU(s) $(gpuq -g 2>/dev/null | awk -v id="$id" '$1==id {$1=""; print}') reserved; loading the model"
+  fi
+  for ((t = 0; ; t += 5)); do
+    healthy && { say "server ready on 127.0.0.1:$PORT (model $MODEL_ID, context $CTX)"; return 0; }
+    owner_alive || { tail -5 "$LOGS/server-latest.log" >&2 2>/dev/null; die "server exited while loading (log: $LOGS/server-latest.log)"; }
+    ((t >= LOAD_WAIT)) && die "server not healthy after ${LOAD_WAIT}s (log: $LOGS/server-latest.log)"
+    ((t % 30 == 0 && t > 0)) && say "still loading (${t}s)"
+    sleep 5
+  done
+}
+
+stop_owned() {  # stop the server recorded in $OWNER, whatever its state; never touches anything else
+  local kind id marker st pid
+  read -r kind id marker < "$OWNER" 2>/dev/null || return 0
+  if [ "$kind" = direct ]; then
+    pid=; same_process "$id" "$marker" && pid=$id   # third field = start time for direct
+  else
+    touch "$marker"; st=$(job_state "$id")   # the marker cancels a job that has not started yet
+    pid=; [ "$st" = running ] && pid=$(gpuq -p "$id" 2>/dev/null)
+    # our own pid file, verified against this install's llama-server path (also covers a job ts has forgotten)
+    is_server_pid "$pid" || pid=$(cat "$RUN/server.pid" 2>/dev/null)
+  fi
+  local ours=no
+  if is_server_pid "$pid" || { [ "$kind" = direct ] && [ -n "$pid" ]; }; then
+    ours=yes
+    kill -TERM "$pid"; for _ in $(seq 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+    kill -0 "$pid" 2>/dev/null && kill -KILL "$pid"
+  fi
+  if [ "$kind" = gpuq ]; then
+    [ "$ours" = yes ] && [ -n "$(job_state "$id")" ] && timeout 60 gpuq -w "$id" >/dev/null 2>&1   # ends with its server
+    case $(job_state "$id") in
+      queued|allocating) say "gpuq job $id is waiting for GPUs; it will exit at once when dispatched (cancel marker)" ;;
+      running) say "WARNING: gpuq job $id is running but its llama-server could not be identified; not touching it. Check: gpuq; dsh-status"
+               return 0 ;;   # keep the owner record so dsh-status still shows it
+      *) rm -f "$marker"; say "server stopped; gpuq job $id: $(job_state "$id" | grep . || echo "no longer queued")" ;;
+    esac
+  elif [ "$ours" = yes ]; then say "server stopped (pid $pid)"
+  else say "the server process had already exited"
+  fi
+  [ "$(cat "$RUN/server.pid" 2>/dev/null)" = "$pid" ] && rm -f "$RUN/server.pid"
+  rm -f "$OWNER"
+}
+
+live_clients() {  # registered launchers that are still alive (stale files are removed)
+  local f n=0
+  for f in "$RUN"/clients/*; do
+    [ -e "$f" ] || continue
+    if same_process "${f##*/}" "$(cat "$f")"; then n=$((n + 1)); else rm -f "$f"; fi
+  done
+  echo $n
+}
+
+on_exit() {
+  rm -f "$RUN/clients/$$"
+  # serialize with launchers attaching right now; a launcher that holds the lock longer is starting a server
+  # (possibly waiting for GPUs) and owns its outcome, so don't hang the exit on it
+  exec 9>"$RUN/start.lock"
+  flock -w 10 9 || { say "another local-dsh launcher is starting the server; leaving it to that launcher"; return; }
+  if [ -f "$OWNER" ] && [ "$(live_clients)" = 0 ]; then stop_owned
+  elif [ -f "$OWNER" ]; then say "leaving the server running for $(live_clients) other local-dsh client(s)"; fi
+}
+
+ensure_server() {
+  mkdir -p "$RUN/clients" "$LOGS"
+  exec 9>"$RUN/start.lock"
+  until flock -w 30 9; do say "another local-dsh launcher is starting the server; waiting"; done
+  trap on_exit EXIT
+  trap 'say "interrupted"; exit 130' INT TERM HUP
+  if healthy; then
+    if [ -f "$OWNER" ]; then say "using the running local-dsh server on :$PORT"
+    else say "attaching to a server on :$PORT that local-dsh did not start (it is left running on exit)"; fi
+  else
+    port_busy && die "port $PORT answers but is not $MODEL_ALIAS with context $CTX; see dsh-status"
+    if [ -f "$OWNER" ] && owner_alive; then say "a local-dsh server is already starting; waiting for it"
+    else rm -f "$OWNER"; start_server; fi
+    wait_ready
+  fi
+  start_time $$ > "$RUN/clients/$$"
+  flock -u 9; exec 9>&-
+}
+
+status() {
+  echo "install:  $LOCAL_DSH_HOME   model: $MODEL_ID   scheduler: $SCHEDULER   port: $PORT   context: $CTX"
+  if healthy; then echo "server:   healthy ($MODEL_ALIAS)"; elif port_busy; then echo "server:   port $PORT answers but is not $MODEL_ALIAS/$CTX"; else echo "server:   not running"; fi
+  if [ -f "$OWNER" ]; then echo "owner:    started by local-dsh ($(cat "$OWNER")); alive: $(owner_alive && echo yes || echo no)"; fi
+  echo "clients:  $(live_clients) local-dsh launcher(s)"
+  [ -f "$RUN/server.pid" ] && ps -o pid=,rss=,etime= -p "$(cat "$RUN/server.pid")" 2>/dev/null | awk '{printf "process:  pid %s, RSS %.1f GiB, up %s\n", $1, $2/1048576, $3}'
+  [ "$SCHEDULER" = gpuq ] && command -v gpuq >/dev/null && { echo "gpuq ($GPUQ_LABEL):"; gpuq | awk -v lab="[$GPUQ_LABEL]" 'NR==1 || ($2!="finished" && index($0, lab))'; }
+  command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader
+  free -g | sed -n '1,2p'
+  echo "log:      $LOGS/server-latest.log"
+}
+
+load_config
+case $cmd in
+  dsh-tui)
+    [ -d "$DSH_HOME/profiles/dsh-tui/node_modules/$DSH_TUI_PACKAGE" ] || die "the TUI plugin is not installed; run: $LOCAL_DSH_REPO/install.sh --with-tui"
+    ensure_server
+    # the TUI otherwise widens the workspace to the enclosing git root; keep exactly this directory
+    [ $# -eq 0 ] && export DSH_TUI_WORKSPACE_TARGET=${DSH_TUI_WORKSPACE_TARGET:-$PWD}
+    "$DSH_BIN" --profile dsh-tui "$@" ;;
+  dsh-web) ensure_server; "$DSH_BIN" --profile web --no-open "$@" ;;
+  dsh-run)
+    [ $# -gt 0 ] || die 'usage: dsh-run "task" [dsh headless options]'
+    ensure_server; "$DSH_BIN" --profile headless "$@" ;;
+  dsh-tui-raw) exec "$DSH_BIN" --profile dsh-tui "$@" ;;
+  dsh-status) status ;;
+  dsh-stop)
+    if [ -f "$OWNER" ]; then
+      n=$(live_clients); [ "$n" -gt 0 ] && warn "$n local-dsh client(s) are still using the server"
+      stop_owned
+    elif port_busy; then say "the server on :$PORT was not started by local-dsh; not stopping it"
+    else say "no server running"; fi ;;
+  *) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

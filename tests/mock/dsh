@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Mock dsh: appends {argv, cwd, workspace target, model seen on the server} to MOCK_DSH_LOG. MOCK_SLEEP, MOCK_RC."""
+import json, os, sys, time, urllib.request
+port = os.environ.get("MOCK_PORT", "8041")
+try:
+    model = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=3))["data"][0]["id"]
+except Exception:
+    model = None
+with open(os.environ["MOCK_DSH_LOG"], "a") as f:
+    f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "target": os.environ.get("DSH_TUI_WORKSPACE_TARGET"),
+                        "dsh_home": os.environ.get("DSH_HOME"), "telemetry_off": os.environ.get("DSH_TELEMETRY_DISABLED"),
+                        "model": model}) + "\n")
+time.sleep(float(os.environ.get("MOCK_SLEEP", "0")))
+sys.exit(int(os.environ.get("MOCK_RC", "0")))

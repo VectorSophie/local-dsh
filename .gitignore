@@ -1,0 +1,33 @@
+# local-dsh keeps all machine state outside the repo ($LOCAL_DSH_HOME, default ~/.local/share/local-dsh).
+# These patterns are a second line of defence against committing it by accident.
+
+# model weights and partial downloads
+*.gguf
+*.gguf.part
+*.part
+models/*/
+# credentials, tokens, environment files
+.credentials.yaml
+*.credentials*
+.env
+*.env.local
+config.env
+# dsh / TUI state, sessions and generated caches
+dsh-home/
+.dsh/
+.dsh-tui/
+sessions/
+storages/
+node_modules/
+.pnpm-store/
+# builds, logs, runtime files
+llama.cpp/
+llama.cpp-build-*/
+node-dsh-*/
+logs/
+run/
+state/
+*.log
+__pycache__/
+*.pyc
+*.bak-*
