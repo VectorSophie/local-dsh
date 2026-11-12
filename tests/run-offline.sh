@@ -55,6 +55,8 @@ ins=$(python3 -I "$R/lib/preset_without_tool_web.py" "$F" insert) && pat=$(pytho
 
 # 4. installer hardware/dependency report with fake GPUs (changes nothing)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+printf 'MemTotal:       263174812 kB\n' > "$T/meminfo"   # 251 GiB, like the tested machine; CI runners have far less
+export LOCAL_DSH_MEMINFO=$T/meminfo
 out=$(PATH=$R/tests/mock:$PATH LOCAL_DSH_HOME=$T/h "$R/install.sh" --check 2>&1); rc=$?
 if grep -q "coder-iq2xxs .*verified .*fits=yes" <<<"$out" && grep -q "GPU 1: RTX PRO 6000, 96 GB" <<<"$out"; then ok "installer --check: 2x96 GB fits the verified model (rc $rc)"
 else bad "installer --check 2x96 GB"; echo "$out" | tail -15; fi

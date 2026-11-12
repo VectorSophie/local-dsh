@@ -49,7 +49,7 @@ GPU_LINES=$(nvidia-smi --query-gpu=index,name,memory.total,compute_cap --format=
 [ -n "$GPU_LINES" ] || die "no NVIDIA GPU visible (nvidia-smi failed). local-dsh needs CUDA GPUs with >= 80 GB total VRAM."
 echo "$GPU_LINES" | awk -F', ' '{printf "  GPU %s: %s, %.0f GB, compute %s\n", $1, $2, $3/1024, $4}' >&2
 DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
-RAM_GB=$(awk '/MemTotal/ {printf "%d", $2/1048576}' /proc/meminfo)
+RAM_GB=$(awk '/MemTotal/ {printf "%d", $2/1048576}' "${LOCAL_DSH_MEMINFO:-/proc/meminfo}")   # override: tests only
 echo "  driver $DRIVER, RAM ${RAM_GB} GiB, $(nproc) CPU threads, $(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-unknown OS}")" >&2
 
 step "Dependencies"
