@@ -99,8 +99,9 @@ Schedulers (`SCHEDULER` in `config.env`):
   free memory the model needs, it refuses to start, naming the processes that hold the memory.
 - **`gpuq`** (optional): submits the server as a task-spooler job, `gpuq -L local-dsh -G <n>`, and waits for the
   reservation. The job lasts exactly as long as the server. Only this launcher's own job is ever removed or stopped.
-  ts cannot remove a job that is still `allocating`, and killing its runner crashes the ts server, so a cancelled
-  job carries a cancel marker and exits immediately if it is dispatched later. The launcher acts only on queue
+  ts sometimes refuses to remove a job that is still `allocating` (seen with `gpuq -r`; another time it worked), and
+  killing that job's runner crashes the ts server. So the launcher tries `gpuq -r` first, and a job it could not remove
+  carries a cancel marker and exits immediately if it is dispatched later. The launcher acts only on queue
   entries labelled `local-dsh`, because ts numbers jobs from 0 again after its server restarts. It never runs
   `gpuq -i`: on a job that is still `allocating`, that crashed the ts server on the tested machine, twice. Avoid it
   yourself as well.
@@ -164,13 +165,15 @@ tests/run-offline.sh      # no network, no GPU, no model; a few minutes
 | dsh + TUI plugin install, profile validation | profile checks only | yes |
 | Model verify + Engram link (existing files) | n/a | yes (183 GB SHA-256) |
 | Model download from Hugging Face | no | no: tested with existing files; the downloader comes from the reference setup that fetched them |
-| Server lifecycle, `direct` scheduler | yes | pending (GPU run queued) |
-| Server lifecycle, `gpuq` scheduler | yes (private queue) | pending (GPU run queued) |
-| `dsh-tui` tool call against the local model | mock dsh | pending (GPU run queued) |
-| `dsh-run` headless task | mock dsh | pending (GPU run queued) |
-| `dsh-web` | mock dsh | pending (GPU run queued) |
+| Server lifecycle, `direct` scheduler | yes | **pass**: `dsh-run` started llama-server itself (inside a 2-GPU gpuq reservation, as this machine requires), model loaded in 14 s, task done, server stopped; 34 s in total |
+| Server lifecycle, `gpuq` scheduler | yes (private queue) | **pass**: three launcher-owned jobs each reserved 2 GPUs, loaded the model and finished on exit. A launcher cancelled while its job was `allocating` removed the job. No leaked jobs, processes or state files. |
+| `dsh-tui` tool call against the local model | mock dsh | **pass**: the footer showed `local-dsh-coder-iq2xxs`, a bash tool call wrote the expected file, double Ctrl+C exited 0, the server stopped. The TUI's only TCP peer was 127.0.0.1:8051. |
+| `dsh-run` headless task | mock dsh | **pass** (`tests/gpu-smoke.sh`): the agent fixed a bug and ran the code; the server was stopped afterwards |
+| `dsh-web` | mock dsh | **pass** (startup only): tokenized URL served (HTTP 303) with the model healthy; ending `dsh web` stopped the server. A tool call through the web UI was not repeated in this validation. |
 | Single-GPU and non-Blackwell setups | n/a | **not tested** |
 | `full-iq2xxs` model | n/a | **not tested** |
+
+GPU validation: 2026-11-12 on the machine in [Requirements](#requirements), 64K context, model `coder-iq2xxs`.
 
 ## Troubleshooting
 
@@ -182,6 +185,18 @@ tests/run-offline.sh      # no network, no GPU, no model; a few minutes
   the GPUs, or choose others with `./install.sh --gpus ...`.
 - **Waiting for GPUs forever** (gpuq): other jobs hold the GPUs. `gpuq` shows the queue, and Ctrl-C cancels your
   request.
+- **Never run `gpuq -i` (`ts -i`) on a job that is `queued` or `allocating`.**
+  - *What happened:* on the tested machine (task-spooler GPU build 1522ab0), `gpuq -i <id>` on an `allocating` job
+    crashed the ts server, twice. The next `gpuq` call silently started a new, empty server.
+  - *Impact:* every queued and running job record and the finished-job history were lost, and job numbering
+    restarted at 0. Processes of running jobs kept running, but the queue no longer tracked them or their
+    reservation. A local-dsh launcher waiting for its job lost it. Killing an `allocating` job's ts runner process
+    crashed a test ts server the same way.
+  - *What local-dsh does:* never calls `gpuq -i`. It acts only on queue entries labelled `local-dsh`, which protects
+    against job numbers being reused after a restart, and exits with "gpuq job N is no longer in the queue" when its
+    job disappears.
+  - *What you should do:* use only `gpuq` (list), `gpuq -s`, `gpuq -g` and `gpuq -c` to inspect jobs. If the queue
+    was reset, check `nvidia-smi` for processes that still hold GPUs before submitting new work.
 - **Server exits while loading:** read the server log. The usual causes are an out-of-memory error from too little
   VRAM, or a model directory without the Engram link; re-run `install.sh` to restore the link.
 - **TUI shows `failed to create agent ... tool-web`:** the TUI profile was edited or reset. Re-run `install.sh`.

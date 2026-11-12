@@ -58,7 +58,7 @@ start_server() {
   mkdir -p "$RUN" "$LOGS"
   if [ "$SCHEDULER" = gpuq ]; then
     command -v gpuq >/dev/null || die "SCHEDULER=gpuq but no gpuq command on PATH"
-    # ts cannot remove a job in "allocating" and killing its runner crashes the ts server, so the job checks a
+    # ts may refuse to remove a job in "allocating" and killing its runner crashes the ts server, so the job checks a
     # cancel marker first: if we gave up before it was dispatched, it exits at once and frees the GPUs.
     local marker=$RUN/cancel-$$-$RANDOM job
     job=$(gpuq -L local-dsh -G "$GPU_COUNT" bash -c \
