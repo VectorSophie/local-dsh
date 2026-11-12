@@ -16,6 +16,7 @@ LOGS=$LOCAL_DSH_HOME/logs
 say() { printf '[local-dsh %s] %s\n' "$(date +%T)" "$*" >&2; }
 warn() { say "WARNING: $*"; }
 die() { say "ERROR: $*"; exit 1; }
+[ -n "$LOCAL_DSH_HOME" ] || die "LOCAL_DSH_HOME must be a dedicated directory, not /"
 
 source_config() {  # export every key of config.env
   set -a

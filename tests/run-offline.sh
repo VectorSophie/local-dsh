@@ -9,7 +9,7 @@ bad() { echo "FAIL $*"; FAIL=1; }
 
 # 1. static checks
 if command -v shellcheck >/dev/null; then
-  shellcheck -x -S warning "$R"/install.sh "$R"/uninstall.sh "$R"/bin/local-dsh "$R"/lib/*.sh "$R"/tests/run-offline.sh "$R"/tests/gpu-smoke.sh "$R"/tests/mock/nvidia-smi \
+  shellcheck -x -S warning "$R"/install.sh "$R"/uninstall.sh "$R"/bin/local-dsh "$R"/lib/*.sh "$R"/tests/run-offline.sh "$R"/tests/gpu-smoke.sh "$R"/tests/test-download.sh "$R"/tests/mock/nvidia-smi \
     && ok "shellcheck" || bad "shellcheck"
 else echo "SKIP shellcheck (not installed)"; fi
 for f in "$R"/install.sh "$R"/uninstall.sh "$R"/bin/local-dsh "$R"/lib/*.sh; do bash -n "$f" || bad "bash -n $f"; done
@@ -83,6 +83,7 @@ LOCAL_DSH_HOME=$H "$R/uninstall.sh" --purge-models > "$T/u2.log" 2>&1
 LOCAL_DSH_HOME=$H "$R/uninstall.sh" --purge > "$T/u3.log" 2>&1
 [ ! -e "$H" ] && [ -e "$M" ] && ok "uninstall --purge: removes the install directory only" || { bad "uninstall --purge"; cat "$T/u3.log"; }
 LOCAL_DSH_HOME=$HOME "$R/uninstall.sh" --purge > "$T/u4.log" 2>&1 && bad "uninstall accepted LOCAL_DSH_HOME=\$HOME" || ok "uninstall refuses a non-dedicated LOCAL_DSH_HOME"
+out=$(LOCAL_DSH_HOME=/ "$R/uninstall.sh" --purge 2>&1); grep -q "dedicated directory" <<<"$out" && ok "LOCAL_DSH_HOME=/ is refused" || bad "LOCAL_DSH_HOME=/ not refused"
 
 # 6. launcher lifecycle (mock server + mock dsh; gpuq backend only if task-spooler is present)
 python3 -I "$R/tests/test_launcher.py" || FAIL=1

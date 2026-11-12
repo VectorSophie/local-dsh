@@ -116,8 +116,9 @@ any links. `HF_ENDPOINT` selects a mirror.
 | `coder-iq2xxs` (default) | **verified** on GPU by this project | 72 GB VRAM + 111 GB Engram, memory-mapped from disk |
 | `full-iq2xxs` | listed, **not tested** | 138 GB VRAM + the same Engram file |
 
-The default context is 65536 tokens. It was validated against 32K: one long repository-navigation task ran out of
-context at 32K and passed at 64K. VRAM use was 73.2 GB at 64K across two GPUs.
+The default context is 65536 tokens. The reason comes from an evaluation on the setup this project was derived from,
+which used the same model, llama.cpp build and dsh version, but not local-dsh's scripts. There, one long
+repository-navigation task ran out of context at 32K and passed at 64K. VRAM use was 73.2 GB at 64K across two GPUs.
 
 ## Plugins
 
@@ -138,6 +139,8 @@ The TUI checks registry.npmjs.org for newer versions in the background. It insta
 
 ```bash
 tests/run-offline.sh      # no network, no GPU, no model; a few minutes
+tests/test-download.sh    # real Hugging Face download of one 5.8 MB file; about 1 minute
+tests/gpu-smoke.sh        # after installing: one real agent task on the GPUs
 ```
 
 - **Static checks:** shellcheck and `bash -n`.
@@ -158,13 +161,13 @@ tests/run-offline.sh      # no network, no GPU, no model; a few minutes
 
 ## Verification status
 
-| Behaviour | Mock-tested (offline suite) | GPU-verified on the tested machine |
+| Behaviour | Mock-tested (offline suite) | Verified on the tested machine |
 |---|---|---|
 | Hardware/dependency detection, model fit | yes | yes (`install.sh --check` and the full install) |
 | llama.cpp pinned build (sm_120) | n/a | yes |
 | dsh + TUI plugin install, profile validation | profile checks only | yes |
 | Model verify + Engram link (existing files) | n/a | yes (183 GB SHA-256) |
-| Model download from Hugging Face | no | no: tested with existing files; the downloader comes from the reference setup that fetched them |
+| Model download from Hugging Face | n/a | **pass** with a real 5.8 MB file from the pinned revision (`tests/test-download.sh`): interruption, resume, SHA-256 check, re-run without download, corrupt-partial and HTTP 404 handling. A full 183 GB download through local-dsh was not repeated; on this machine the files came from the reference setup, and the installer verified them. |
 | Server lifecycle, `direct` scheduler | yes | **pass**: `dsh-run` started llama-server itself (inside a 2-GPU gpuq reservation, as this machine requires), model loaded in 14 s, task done, server stopped; 34 s in total |
 | Server lifecycle, `gpuq` scheduler | yes (private queue) | **pass**: three launcher-owned jobs each reserved 2 GPUs, loaded the model and finished on exit. A launcher cancelled while its job was `allocating` removed the job. No leaked jobs, processes or state files. |
 | `dsh-tui` tool call against the local model | mock dsh | **pass**: the footer showed `local-dsh-coder-iq2xxs`, a bash tool call wrote the expected file, double Ctrl+C exited 0, the server stopped. The TUI's only TCP peer was 127.0.0.1:8051. |
@@ -174,6 +177,17 @@ tests/run-offline.sh      # no network, no GPU, no model; a few minutes
 | `full-iq2xxs` model | n/a | **not tested** |
 
 GPU validation: 2026-11-12 on the machine in [Requirements](#requirements), 64K context, model `coder-iq2xxs`.
+
+Two defects in the GPU validation script (a throwaway driver, not shipped) affected that run. Neither is a local-dsh
+bug:
+- **Simulated Ctrl-C never arrived.** The script sent SIGINT to `dsh-web` running as a background job of a
+  non-interactive shell, and such jobs start with SIGINT ignored. The run was finished by ending the `dsh web`
+  process, after which the launcher stopped the server and released the gpuq job normally. A real Ctrl-C in a
+  terminal goes to the whole foreground process group and isn't affected.
+- **Wrong install under test.** The first direct-scheduler attempt put another install's command wrappers on PATH.
+  Those wrappers pin their own install, so that attempt used the gpuq scheduler and waited for GPUs held by its own
+  reservation. Its launcher was cancelled, and its cleanup removed the waiting job. The step was then re-run
+  correctly, and that run's result is the one reported above.
 
 ## Troubleshooting
 
@@ -200,7 +214,8 @@ GPU validation: 2026-11-12 on the machine in [Requirements](#requirements), 64K 
 - **Server exits while loading:** read the server log. The usual causes are an out-of-memory error from too little
   VRAM, or a model directory without the Engram link; re-run `install.sh` to restore the link.
 - **TUI shows `failed to create agent ... tool-web`:** the TUI profile was edited or reset. Re-run `install.sh`.
-- **A model download stopped:** re-run `install.sh`; it resumes from the `.part` file. A hash mismatch keeps the
+- **A model download stopped:** re-run `install.sh`; it resumes from the `.part` file. A permanent HTTP error, such as
+  404 for a wrong revision or 401/403 for a gated repo, stops at once and prints the URL; check `HF_ENDPOINT` and any proxy. A hash mismatch keeps the
   partial file and asks you to delete it.
 - **Plain dsh for debugging:** `DSH_HOME=$LOCAL_DSH_HOME/dsh-home $LOCAL_DSH_HOME/node-dsh-*/node_modules/.bin/dsh --profile headless --dump-config`.
 

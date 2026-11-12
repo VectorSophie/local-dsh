@@ -23,8 +23,11 @@ fetch() {  # path size sha
     have=$(stat -c %s "$f.part" 2>/dev/null || echo 0)
     [ "$have" -ge "$2" ] && break
     # -C - resumes; the low-speed abort turns a stalled connection into a retry
-    curl -fL -C - --connect-timeout 30 --speed-limit 10000 --speed-time 120 --progress-bar -o "$f.part" "$BASE/$1"
+    code=$(curl -fL -C - --connect-timeout 30 --speed-limit 10000 --speed-time 120 --progress-bar \
+      -w '%{http_code}' -o "$f.part" "$BASE/$1")
     rc=$?; [ $rc = 0 ] && continue
+    # a permanent HTTP error (wrong revision/path, gated or missing repo) is not worth 200 retries
+    case $code in 408|429) ;; 4??) die "$1: HTTP $code from $BASE/$1 (not retrying; check the catalog revision, HF_ENDPOINT or proxy)" ;; esac
     say "curl exit $rc at $(stat -c %s "$f.part" 2>/dev/null || echo 0) bytes; retry $try in 20 s (safe to interrupt and re-run)"
     sleep 20
   done
