@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""Mock llama-server: --port/--ctx-size/--alias honored. MOCK_LOAD_DELAY (s), MOCK_FAIL=1 (exit 1 while loading)."""
+import http.server, json, os, sys, time
+a = sys.argv
+port, ctx, alias = int(a[a.index("--port") + 1]), int(a[a.index("--ctx-size") + 1]), a[a.index("--alias") + 1]
+print("mock llama-server", " ".join(a[1:]), "CUDA_VISIBLE_DEVICES=" + os.environ.get("CUDA_VISIBLE_DEVICES", ""), flush=True)
+if os.environ.get("MOCK_FAIL") == "1":
+    sys.exit(1)
+time.sleep(float(os.environ.get("MOCK_LOAD_DELAY", "1")))
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *x): pass
+    def do_GET(self):
+        body = {"/health": {"status": "ok"}, "/v1/models": {"data": [{"id": alias}]},
+                "/props": {"default_generation_settings": {"n_ctx": ctx}}}.get(self.path.split("?")[0])
+        self.send_response(200 if body else 404); self.send_header("Content-Type", "application/json"); self.end_headers()
+        self.wfile.write(json.dumps(body or {}).encode())
+http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()

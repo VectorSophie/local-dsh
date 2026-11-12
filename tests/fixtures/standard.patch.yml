@@ -1,0 +1,22 @@
+# Synthetic fixture with the same layout as dsh-web-app/presets/standard.patch.yml (not a copy of it).
+- insert:
+    - id: preset-standard
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: standard
+        order: 1
+        plugins:
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+          - id: compaction
+            name: cordis:group
+            group: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'

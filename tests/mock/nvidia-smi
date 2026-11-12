@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Mock nvidia-smi. MOCK_GPUS="name:total_MiB:free_MiB:cc;..." (default: two 96 GB Blackwell cards)
+IFS=';' read -ra G <<< "${MOCK_GPUS:-RTX PRO 6000:97887:97000:12.0;RTX PRO 6000:97887:97000:12.0}"
+q=$(printf '%s\n' "$@" | sed -n 's/^--query-gpu=//p')
+case $q in
+  index,name,memory.total,compute_cap) for i in "${!G[@]}"; do IFS=: read -r n t f c <<< "${G[$i]}"; echo "$i, $n, $t, $c"; done ;;
+  driver_version) echo 999.99 ;;
+  index,memory.free) for i in "${!G[@]}"; do IFS=: read -r n t f c <<< "${G[$i]}"; echo "$i, $f"; done ;;
+  "") [ "$*" = "${*/--query-compute-apps/}" ] || echo "1234, 90000 MiB, other-process" ;;
+  *) for i in "${!G[@]}"; do echo "$i, mock, 0, 0, 0"; done ;;
+esac
