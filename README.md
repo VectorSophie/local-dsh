@@ -175,13 +175,24 @@ tests/gpu-smoke.sh        # after installing: one real agent task on the GPUs
 | Server lifecycle, `gpuq` scheduler | yes (private queue) | **pass**: three launcher-owned jobs each reserved 2 GPUs, loaded the model and finished on exit. A launcher cancelled while its job was `allocating` removed the job. No leaked jobs, processes or state files. |
 | `dsh-tui` tool call against the local model | mock dsh | **pass**: the footer showed `local-dsh-coder-iq2xxs`, a bash tool call wrote the expected file, double Ctrl+C exited 0, the server stopped. The TUI's only TCP peer was 127.0.0.1:8051. |
 | `dsh-run` headless task | mock dsh | **pass** (`tests/gpu-smoke.sh`): the agent fixed a bug and ran the code; the server was stopped afterwards |
-| `dsh-web` | mock dsh | **pass** (startup only): tokenized URL served (HTTP 303) with the model healthy; ending `dsh web` stopped the server. A tool call through the web UI was not repeated in this validation. |
+| `dsh-web` | mock dsh | **pass**: a real bash tool call through the browser UI, run in the release gate below. Ctrl-C stopped the server and released the gpuq job. |
 | Single-GPU and non-Blackwell setups | n/a | **not tested** |
 | `full-iq2xxs` model | n/a | **not tested** |
 
 GPU validation: 2026-11-12 on the machine in [Requirements](#requirements), 64K context, model `coder-iq2xxs`.
 A later fix to how the launcher tracks its server process (pid plus start time) was re-tested on the GPUs with
 `tests/gpu-smoke.sh`, once per scheduler, with the same results.
+
+**v0.1.0 release gate (same machine, code at `c4bba0a`):**
+1. A clean install from a fresh clone, with a new `LOCAL_DSH_HOME`, the default `~/.local/bin`, and llama.cpp cloned
+   from upstream GitHub and built. The existing model files were SHA-256-verified in place (183 GB in about 2
+   minutes), not downloaded.
+2. The installer created `dsh-web` and `dsh-run`. It skipped five command names already owned by another setup, as
+   designed.
+3. `dsh-web` reserved both GPUs through gpuq under the install's own label, and a real bash tool call through the
+   browser UI wrote the expected file. Ctrl-C stopped the server and the job finished.
+4. Afterwards there were no leftover processes, reservations or state files. A before/after comparison of user
+   configuration showed only the two new launchers.
 
 Two defects in the GPU validation script (a throwaway driver, not shipped) affected that run. Neither is a local-dsh
 bug:
