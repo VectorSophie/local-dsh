@@ -138,7 +138,7 @@ The TUI checks registry.npmjs.org for newer versions in the background. It insta
 ## Tests
 
 ```bash
-tests/run-offline.sh      # no network, no GPU, no model; a few minutes
+tests/run-offline.sh      # no network, no GPU, no model; a few minutes. Runs on every push and PR (GitHub Actions)
 tests/test-download.sh    # real Hugging Face download of one 5.8 MB file; about 1 minute
 tests/gpu-smoke.sh        # after installing: one real agent task on the GPUs
 ```
@@ -147,7 +147,7 @@ tests/gpu-smoke.sh        # after installing: one real agent task on the GPUs
 - **Model catalog:** each model's files, first shard and links are consistent.
 - **Preset generator:** run on a synthetic fixture; only the web-search row is removed.
 - **Installer hardware detection:** run against a fake `nvidia-smi` (2x96 GB and 1x24 GB).
-- **47 launcher lifecycle checks:** run with a mock `llama-server` and a mock `dsh`. They cover:
+- **49 launcher lifecycle checks** (39 without task-spooler, as on CI): run with a mock `llama-server` and a mock `dsh`. They cover:
   - cold start, keeping the working directory as the workspace even inside a git repository;
   - passing arguments and exit codes through;
   - attaching to a server local-dsh did not start, and refusing a server with the wrong context;
@@ -177,6 +177,8 @@ tests/gpu-smoke.sh        # after installing: one real agent task on the GPUs
 | `full-iq2xxs` model | n/a | **not tested** |
 
 GPU validation: 2026-11-12 on the machine in [Requirements](#requirements), 64K context, model `coder-iq2xxs`.
+A later fix to how the launcher tracks its server process (pid plus start time) was re-tested on the GPUs with
+`tests/gpu-smoke.sh`, once per scheduler, with the same results.
 
 Two defects in the GPU validation script (a throwaway driver, not shipped) affected that run. Neither is a local-dsh
 bug:
