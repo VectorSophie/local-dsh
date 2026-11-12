@@ -30,10 +30,13 @@ is_server_pid() { [ -n "${1:-}" ] && grep -qaF -- "$LLAMA_SERVER" "/proc/$1/cmdl
 start_time() { sed -E 's/^.*\) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20; }
 same_process() { [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ "$(start_time "$1")" = "$2" ]; }
 
-# State of gpuq job $1, but only if the queue lists it with our label; empty if unknown. The label check matters
-# because ts numbers jobs from 0 again after its server restarts, so an old job id can name someone else's job.
-# Never use `gpuq -i`/`ts -i` here: on a job in "allocating" it crashes the ts server (observed twice).
-job_state() { gpuq 2>/dev/null | awk -v id="$1" '$1==id && index($0, "[local-dsh]") {print $2; exit}'; }
+# gpuq jobs carry a label unique to this installation (13 chars: shown untruncated by `gpuq`). A job id alone is not
+# an identity: ts numbers jobs from 0 again after its server restarts. So the launcher never removes (-r) or kills
+# (-k) a job by id. It stops a running job only by killing the llama-server process it identified, and a job it
+# gave up on exits by itself through its cancel marker when dispatched (it holds the GPUs only for that moment).
+# Never use `gpuq -i`/`ts -i`: on a job in "allocating" it crashes the ts server (observed twice).
+GPUQ_LABEL=ldsh-$(printf '%s' "$LOCAL_DSH_HOME" | sha256sum | cut -c1-8)
+job_state() { gpuq 2>/dev/null | awk -v id="$1" -v lab="[$GPUQ_LABEL]" '$1==id && index($0, lab) {print $2; exit}'; }
 
 owner_alive() {
   local kind id extra
@@ -63,11 +66,11 @@ start_server() {
     # ts may refuse to remove a job in "allocating" and killing its runner crashes the ts server, so the job checks a
     # cancel marker first: if we gave up before it was dispatched, it exits at once and frees the GPUs.
     local marker=$RUN/cancel-$$-$RANDOM job
-    job=$(gpuq -L local-dsh -G "$GPU_COUNT" bash -c \
+    job=$(gpuq -L "$GPUQ_LABEL" -G "$GPU_COUNT" bash -c \
       'if [ -e "$1" ]; then rm -f "$1"; echo "cancelled before dispatch"; exit 0; fi; exec "$2"' \
       local-dsh-guard "$marker" "$LOCAL_DSH_REPO/lib/run-server.sh" 9>&-) || die "gpuq submit failed"
     echo "gpuq $job $marker" > "$OWNER"
-    say "requested $GPU_COUNT GPU(s) from gpuq: job $job (Ctrl-C cancels it)"
+    say "requested $GPU_COUNT GPU(s) from gpuq: job $job, label $GPUQ_LABEL (Ctrl-C cancels it)"
   else
     vram_check
     # 9>&-: the server must not inherit the start lock, or the lock would live as long as the server
@@ -106,13 +109,10 @@ stop_owned() {  # stop the server recorded in $OWNER, whatever its state; never 
   if [ "$kind" = direct ]; then
     pid=; same_process "$id" "$marker" && pid=$id   # third field = start time for direct
   else
-    touch "$marker"; st=$(job_state "$id")
-    if [ "$st" = queued ] || [ "$st" = allocating ]; then
-      if gpuq -r "$id" >/dev/null 2>&1; then rm -f "$marker" "$OWNER"; say "removed gpuq job $id before it started"; return 0; fi
-      st=$(job_state "$id")
-    fi
+    touch "$marker"; st=$(job_state "$id")   # the marker cancels a job that has not started yet
     pid=; [ "$st" = running ] && pid=$(gpuq -p "$id" 2>/dev/null)
-    is_server_pid "$pid" || { [ "$st" = running ] && pid=$(cat "$RUN/server.pid" 2>/dev/null); }
+    # our own pid file, verified against this install's llama-server path (also covers a job ts has forgotten)
+    is_server_pid "$pid" || pid=$(cat "$RUN/server.pid" 2>/dev/null)
   fi
   local ours=no
   if is_server_pid "$pid" || { [ "$kind" = direct ] && [ -n "$pid" ]; }; then
@@ -121,11 +121,11 @@ stop_owned() {  # stop the server recorded in $OWNER, whatever its state; never 
     kill -0 "$pid" 2>/dev/null && kill -KILL "$pid"
   fi
   if [ "$kind" = gpuq ]; then
-    [ -n "$st" ] && timeout 60 gpuq -w "$id" >/dev/null 2>&1
-    # -k only for a job whose server we identified: after a ts restart the id may be another install's job
-    [ "$ours" = yes ] && [ "$(job_state "$id")" = running ] && gpuq -k "$id" >/dev/null 2>&1
+    [ "$ours" = yes ] && [ -n "$(job_state "$id")" ] && timeout 60 gpuq -w "$id" >/dev/null 2>&1   # ends with its server
     case $(job_state "$id") in
-      queued|allocating) say "gpuq job $id is still waiting; it will exit immediately when dispatched (cancel marker)" ;;
+      queued|allocating) say "gpuq job $id is waiting for GPUs; it will exit at once when dispatched (cancel marker)" ;;
+      running) say "WARNING: gpuq job $id is running but its llama-server could not be identified; not touching it. Check: gpuq; dsh-status"
+               return 0 ;;   # keep the owner record so dsh-status still shows it
       *) rm -f "$marker"; say "server stopped; gpuq job $id: $(job_state "$id" | grep . || echo "no longer queued")" ;;
     esac
   elif [ "$ours" = yes ]; then say "server stopped (pid $pid)"
@@ -179,7 +179,7 @@ status() {
   if [ -f "$OWNER" ]; then echo "owner:    started by local-dsh ($(cat "$OWNER")); alive: $(owner_alive && echo yes || echo no)"; fi
   echo "clients:  $(live_clients) local-dsh launcher(s)"
   [ -f "$RUN/server.pid" ] && ps -o pid=,rss=,etime= -p "$(cat "$RUN/server.pid")" 2>/dev/null | awk '{printf "process:  pid %s, RSS %.1f GiB, up %s\n", $1, $2/1048576, $3}'
-  [ "$SCHEDULER" = gpuq ] && command -v gpuq >/dev/null && { echo "gpuq:"; gpuq | awk 'NR==1 || ($2!="finished" && /local-dsh/)'; }
+  [ "$SCHEDULER" = gpuq ] && command -v gpuq >/dev/null && { echo "gpuq ($GPUQ_LABEL):"; gpuq | awk -v lab="[$GPUQ_LABEL]" 'NR==1 || ($2!="finished" && index($0, lab))'; }
   command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader
   free -g | sed -n '1,2p'
   echo "log:      $LOGS/server-latest.log"

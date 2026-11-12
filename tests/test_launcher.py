@@ -4,7 +4,7 @@ The direct backend is always tested. The gpuq backend is tested only when task-s
 PATH, through a private socket and a scratch savelist: the shared queue is never used.
 usage: python3 -I tests/test_launcher.py
 """
-import json, os, shlex, shutil, signal, subprocess, sys, tempfile, time
+import hashlib, json, os, shlex, shutil, signal, subprocess, sys, tempfile, time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MOCK = os.path.join(REPO, "tests", "mock")
@@ -232,20 +232,42 @@ def gpuq_tests(ts):
     try:
         write_config("gpuq")
         rc, out = finish(run("dsh-run", extra=env, args=["t"]))
-        check("gpuq: cold start, rc 0, job labelled local-dsh", rc == 0 and "requested 2 GPU(s) from gpuq" in out and any("local-dsh" in " ".join(j) for j in jobs()), out[-400:])
+        label = "ldsh-" + hashlib.sha256(HOME_DIR.encode()).hexdigest()[:8]
+        check("gpuq: cold start, rc 0, job carries this install's label", rc == 0 and "requested 2 GPU(s) from gpuq" in out and any(f"[{label}]" in " ".join(j) for j in jobs()), (out[-400:], jobs()))
         check("gpuq: job finished after the client exits", wait_for(lambda: not unfinished(), 30), jobs())
         clean("gpuq cold start")
         blocker = q("-L", "other-job", "-G", "2", "sleep", "300")
         wait_for(lambda: any(j[0] == blocker and j[1] == "running" for j in jobs()), 30)
         p = run("dsh-run", extra=env, args=["t"]); time.sleep(8)
         p.send_signal(signal.SIGINT); rc, out = finish(p)
-        check("gpuq: Ctrl-C while waiting for GPUs -> rc 130, job removed or marked", rc == 130 and ("removed gpuq job" in out or "cancel marker" in out), out[-400:])
+        check("gpuq: Ctrl-C while waiting for GPUs -> rc 130, cancel marker (never gpuq -r)", rc == 130 and "cancel marker" in out, out[-400:])
         check("gpuq: the other job is untouched", any(j[0] == blocker and j[1] == "running" for j in jobs()), jobs())
         q("-k", blocker)
         check("gpuq: a cancelled job exits at dispatch without a server", wait_for(lambda: not unfinished(), 40) and not mock_servers(), jobs())
         run_dir = os.path.join(HOME_DIR, "run")
         check("gpuq: cancel markers cleaned up", not [x for x in os.listdir(run_dir) if x.startswith("cancel-")], os.listdir(run_dir))
         clean("gpuq cancel")
+        # job-id collision: our owner record names a job of ANOTHER install (same id after a ts restart).
+        # Fail closed: neither a queued nor a running foreign job is removed, killed or waited on.
+        run_dir = os.path.join(HOME_DIR, "run")
+        holder = q("-L", "ldsh-0ther1ns", "-G", "2", "sleep", "300")
+        wait_for(lambda: any(j[0] == holder and j[1] == "running" for j in jobs()), 30)
+        queued = q("-L", "ldsh-0ther1ns", "-G", "2", "sleep", "300")
+        for victim, state in ((holder, "running"), (queued, "allocating")):
+            with open(os.path.join(run_dir, "server.owner"), "w") as f:
+                f.write(f"gpuq {victim} {run_dir}/cancel-test-{victim}\n")
+            rc, out = finish(run("dsh-stop", extra=env), 90)
+            check(f"gpuq: foreign {state} job with a colliding id is left alone",
+                  any(j[0] == victim and j[1] == state for j in jobs()), (out[-300:], jobs()))
+        for job in (holder, queued):  # end both foreign test jobs by pid (test-owned processes)
+            wait_for(lambda: any(j[0] == job and j[1] == "running" for j in jobs()), 30)
+            pid = q("-p", job)
+            if pid.isdigit():
+                os.kill(int(pid), signal.SIGTERM)
+        wait_for(lambda: not unfinished(), 30)
+        for x in os.listdir(run_dir):
+            if x.startswith("cancel-test-"):
+                os.remove(os.path.join(run_dir, x))
         # the queue server restarts while we wait (all jobs forgotten): exit with a clear error, do not hang
         blocker = q("-L", "other-job", "-G", "2", "sleep", "300")
         wait_for(lambda: any(j[0] == blocker and j[1] == "running" for j in jobs()), 30)
@@ -263,6 +285,9 @@ def gpuq_tests(ts):
         clean("gpuq queue restart")
     finally:
         q("-K")
+        for leftover in (sock, sock + ".error"):  # ts leaves an .error dump when its server is shut down
+            if os.path.exists(leftover):
+                os.remove(leftover)
 
 
 if __name__ == "__main__":

@@ -97,14 +97,17 @@ How the model server is managed:
 Schedulers (`SCHEDULER` in `config.env`):
 - **`direct`** (default without gpuq): runs `llama-server` on the configured `CUDA_DEVICES`. If those GPUs lack the
   free memory the model needs, it refuses to start, naming the processes that hold the memory.
-- **`gpuq`** (optional): submits the server as a task-spooler job, `gpuq -L local-dsh -G <n>`, and waits for the
-  reservation. The job lasts exactly as long as the server. Only this launcher's own job is ever removed or stopped.
-  ts sometimes refuses to remove a job that is still `allocating` (seen with `gpuq -r`; another time it worked), and
-  killing that job's runner crashes the ts server. So the launcher tries `gpuq -r` first, and a job it could not remove
-  carries a cancel marker and exits immediately if it is dispatched later. The launcher acts only on queue
-  entries labelled `local-dsh`, because ts numbers jobs from 0 again after its server restarts. It never runs
-  `gpuq -i`: on a job that is still `allocating`, that crashed the ts server on the tested machine, twice. Avoid it
-  yourself as well.
+- **`gpuq`** (optional): submits the server as a task-spooler job and waits for the reservation. The job lasts exactly
+  as long as the server. Each installation uses its own job label, `ldsh-<8 hex digits>`, derived from its install
+  directory. **The launcher never removes (`gpuq -r`) or kills (`gpuq -k`) a job by number**, because ts numbers jobs
+  from 0 again after its server restarts, so a number alone can't prove ownership. Instead:
+  - a running job ends when the launcher stops the llama-server process it identified;
+  - a job you cancelled while it waited for GPUs carries a cancel marker, and when dispatched it exits at once,
+    holding the GPUs only for that moment;
+  - if ownership can't be established, nothing is touched and a warning is printed.
+
+  It never runs `gpuq -i` either: on a job that is still `allocating`, that crashed the ts server on the tested
+  machine, twice. Avoid it yourself as well.
 
 ## Model catalog
 
@@ -208,7 +211,7 @@ bug:
     restarted at 0. Processes of running jobs kept running, but the queue no longer tracked them or their
     reservation. A local-dsh launcher waiting for its job lost it. Killing an `allocating` job's ts runner process
     crashed a test ts server the same way.
-  - *What local-dsh does:* never calls `gpuq -i`. It acts only on queue entries labelled `local-dsh`, which protects
+  - *What local-dsh does:* never calls `gpuq -i`. It acts only on queue entries carrying its own install's label, which protects
     against job numbers being reused after a restart, and exits with "gpuq job N is no longer in the queue" when its
     job disappears.
   - *What you should do:* use only `gpuq` (list), `gpuq -s`, `gpuq -g` and `gpuq -c` to inspect jobs. If the queue
