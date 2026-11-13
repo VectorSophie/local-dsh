@@ -21,10 +21,17 @@ checks = {
     "reasoning high": "reasoningEffort: high" in row("agent-default-model"),
     "hosted DeepSeek off": "disabled: true" in row("llm-deepseek") and "disabled: true" in row("llm-deepseek-account"),
     "telemetry off": "disabled: true" in row("session-telemetry-otel"),
+    "skill registry present": "name: '@deepseek-ai/dsh-skill'" in row("skill") and "disabled: true" not in row("skill"),
 }
 if p in ("web", "dsh-tui"):
     checks["standard preset without tool-web"] = "id: standard" in row("preset-standard") and "dsh-tool-web" not in row("preset-standard")
     checks["account sign-in off"] = "disabled: true" in row("deepseek-account")
+if p in ("headless", "dsh-tui"):
+    checks["skill filesystem provider"] = "name: '@deepseek-ai/dsh-skill-filesystem'" in row("skill-filesystem") and "disabled: true" not in row("skill-filesystem")
+    checks["skill loader tool"] = "name: '@deepseek-ai/dsh-tool-skill'" in row("tool-skill") and "disabled: true" not in row("tool-skill")
+if p == "web":
+    checks["web preset skill filesystem provider"] = "name: '@deepseek-ai/dsh-skill-filesystem'" in row("preset-standard")
+    checks["web preset skill loader tool"] = "name: '@deepseek-ai/dsh-tool-skill'" in row("preset-standard")
 if p == "dsh-tui":
     checks["TUI pinned to local model"] = f"model: {alias}" in row("dsh-tui") and "provider: local-dsh" in row("dsh-tui")
 bad = [k for k, ok in checks.items() if not ok]
