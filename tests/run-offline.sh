@@ -9,10 +9,10 @@ bad() { echo "FAIL $*"; FAIL=1; }
 
 # 1. static checks
 if command -v shellcheck >/dev/null; then
-  shellcheck -x -S warning "$R"/install.sh "$R"/uninstall.sh "$R"/bin/local-dsh "$R"/lib/*.sh "$R"/tests/run-offline.sh "$R"/tests/gpu-smoke.sh "$R"/tests/test-download.sh "$R"/tests/mock/nvidia-smi \
+  shellcheck -x -S warning "$R"/install.sh "$R"/uninstall.sh "$R"/bin/local-dsh "$R"/lib/*.sh "$R"/tests/run-offline.sh "$R"/tests/gpu-smoke.sh "$R"/tests/gpu-skill-smoke.sh "$R"/tests/test-download.sh "$R"/tests/mock/nvidia-smi \
     && ok "shellcheck" || bad "shellcheck"
 else echo "SKIP shellcheck (not installed)"; fi
-for f in "$R"/install.sh "$R"/uninstall.sh "$R"/bin/local-dsh "$R"/lib/*.sh; do bash -n "$f" || bad "bash -n $f"; done
+for f in "$R"/install.sh "$R"/uninstall.sh "$R"/bin/local-dsh "$R"/lib/*.sh "$R"/tests/gpu-skill-smoke.sh; do bash -n "$f" || bad "bash -n $f"; done
 
 # 2. catalog: every model has files with size+sha256, its first shard is a file or link, link targets exist
 python3 -I - "$R/models/catalog.tsv" <<'PY' && ok "model catalog consistent" || bad "model catalog"
