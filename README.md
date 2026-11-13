@@ -138,12 +138,25 @@ skip it; `dsh-web` and `dsh-run` don't need it. local-dsh changes four things in
 The TUI checks registry.npmjs.org for newer versions in the background. It installs nothing unless you run its
 `/update` command. Don't, because `/update` would also replace the pinned dsh.
 
+## Skills
+
+local-dsh keeps dsh's native skill registry, filesystem provider, and `skill` tool. Put standalone
+`SKILL.md` bundles under `<project>/.agents/skills/<name>/` (or the other supported roots).
+There is no Claude Code dependency and no automatic conversion of benchmarks into skills.
+
+The installer now checks skill wiring in its composed profiles. For the **actual local-model**
+discovery/load/follow test, run `bash tests/gpu-skill-smoke.sh` after installation.
+It inspects the headless JSON tool-call log and verifies that an instruction found only
+in a temporary skill body was followed. This does not test adversarial skills or other UIs.
+See `docs/skills.md` for paths, external experiments, and validation details.
+
 ## Tests
 
 ```bash
 tests/run-offline.sh      # no network, no GPU, no model; a few minutes. Runs on every push and PR (GitHub Actions)
 tests/test-download.sh    # real Hugging Face download of one 5.8 MB file; about 1 minute
 tests/gpu-smoke.sh        # after installing: one real agent task on the GPUs
+bash tests/gpu-skill-smoke.sh  # after installing: real skill discovery, load, and compliance
 ```
 
 - **Static checks:** shellcheck and `bash -n`.
