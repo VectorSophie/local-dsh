@@ -26,12 +26,15 @@ checks = {
 if p in ("web", "dsh-tui"):
     checks["standard preset without tool-web"] = "id: standard" in row("preset-standard") and "dsh-tool-web" not in row("preset-standard")
     checks["account sign-in off"] = "disabled: true" in row("deepseek-account")
-if p in ("headless", "dsh-tui"):
+# Headless loads its skill filesystem and tool in the host plane. Web and TUI
+# use an agent-scoped standard preset; the host copies may be disabled there.
+# In particular, do not require TUI host-plane rows to be enabled.
+if p == "headless":
     checks["skill filesystem provider"] = "name: '@deepseek-ai/dsh-skill-filesystem'" in row("skill-filesystem") and "disabled: true" not in row("skill-filesystem")
     checks["skill loader tool"] = "name: '@deepseek-ai/dsh-tool-skill'" in row("tool-skill") and "disabled: true" not in row("tool-skill")
-if p == "web":
-    checks["web preset skill filesystem provider"] = "name: '@deepseek-ai/dsh-skill-filesystem'" in row("preset-standard")
-    checks["web preset skill loader tool"] = "name: '@deepseek-ai/dsh-tool-skill'" in row("preset-standard")
+if p in ("web", "dsh-tui"):
+    checks["standard preset skill filesystem provider"] = "name: '@deepseek-ai/dsh-skill-filesystem'" in row("preset-standard")
+    checks["standard preset skill loader tool"] = "name: '@deepseek-ai/dsh-tool-skill'" in row("preset-standard")
 if p == "dsh-tui":
     checks["TUI pinned to local model"] = f"model: {alias}" in row("dsh-tui") and "provider: local-dsh" in row("dsh-tui")
 bad = [k for k, ok in checks.items() if not ok]

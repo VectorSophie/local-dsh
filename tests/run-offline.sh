@@ -54,6 +54,9 @@ ins=$(python3 -I "$R/lib/preset_without_tool_web.py" "$F" insert) && pat=$(pytho
   && grep -q "dsh-skill-filesystem" <<<"$ins$pat" && grep -q "dsh-tool-skill" <<<"$ins$pat" \
   && ok "preset generator removes only tool-web and retains skills" || bad "preset generator"
 
+# 3b. profile checks must accept preset-scoped Web/TUI skills and reject missing tools
+python3 -I "$R/tests/test_profile_check.py" && ok "skill profile validation regression" || bad "skill profile validation regression"
+
 # 4. installer hardware/dependency report with fake GPUs (changes nothing)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 printf 'MemTotal:       263174812 kB\n' > "$T/meminfo"   # 251 GiB, like the tested machine; CI runners have far less
